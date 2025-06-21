@@ -21,6 +21,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 #include <assert.h>
 #include <time.h>
 #include <sys/stat.h>
@@ -37,8 +38,13 @@
 #define xrealloc realloc
 #define xzalloc(n)  calloc(1, (n))
 #define xmalloc  malloc
-#define xstrdup  strdup
 
+char *xstrdup(char *s)
+{
+  char *p = malloc(strlen(s) + 1);
+  assert(p);
+  return strcpy(p, s);
+}
 
 struct fdata {
   char **lines;
@@ -58,12 +64,12 @@ struct line_num_ptr {
 
 int cmpline(char *a, char *b)
 {
-    // Stand-in for compare with options -i -b -w etc.
-    return strcmp(a, b);
+  // Stand-in for compare with options -i -b -w etc.
+  return strcmp(a, b);
 }
 
 // Like getline() but not quite.
-ssize_t readline(char **buf, size_t *bufsiz, FILE *fp)
+intmax_t readline(char **buf, size_t *bufsiz, FILE *fp)
 {
 #define initsz 512
   if (! *buf) {
@@ -84,7 +90,8 @@ ssize_t readline(char **buf, size_t *bufsiz, FILE *fp)
     *bufsiz = n;
     p += strlen(p);
     //fgets(p, *bufsiz - strlen(*buf), fp);
-    fgets(p, *buf + *bufsiz - p, fp);   // same as above but faster?
+    char *np = fgets(p, *buf + *bufsiz - p, fp);   // same as above but faster?
+    assert(np);
   }
   return strlen(*buf);
 }
@@ -94,11 +101,11 @@ struct fdata read_fdata(char *fn)
   struct fdata fd;
   FILE *fp = strcmp(fn, "-") ? fopen(fn, "r") : stdin;
   assert(fp);
-  size_t linesmax = 100;
+  intmax_t linesmax = 100;
   fd.lines = xzalloc(linesmax * sizeof(*fd.lines));
   fd.nlines = 0;
   char *line = NULL;
-  ssize_t k;
+  intmax_t k;
   size_t linesz = 0;
   k = readline(&line, &linesz, fp);
   while (k >= 0) {
@@ -108,7 +115,7 @@ struct fdata read_fdata(char *fn)
     }
     fd.lines[fd.nlines++] = xstrdup(line);
     k = readline(&line, &linesz, fp);
-    assert(k < 0 || k == strlen(line));
+    assert(k < 0 || (size_t)k == strlen(line));
   }
   free(line);
   if (strcmp(fn, "-"))
@@ -348,7 +355,7 @@ void printhdr(char *prefix, char *fn)
 }
 
 void print_diff(char *fn1, char *fn2, struct fdata a, struct fdata b,
-        struct lcs lcs, int nctx)
+    struct lcs lcs, int nctx)
 {
   printhdr("---", fn1);
   printhdr("+++", fn2);
@@ -376,9 +383,9 @@ void print_diff(char *fn1, char *fn2, struct fdata a, struct fdata b,
     // Adjust begin line numbers if count is zero, to match gnu diff -U 0
     // Not sure it's incorrect without this, but patch doesn't work without it.
     if (!cnt_a)
-        begin_a--;
+      begin_a--;
     if (!cnt_b)
-        begin_b--;
+      begin_b--;
 
     printf("@@ -%d", begin_a);
     if (cnt_a != 1)
@@ -404,15 +411,12 @@ void print_diff(char *fn1, char *fn2, struct fdata a, struct fdata b,
 
 void diff(char *fn1, char *fn2, int nctx)
 {
-  //printf("Dif: %s %s\n", fn1, fn2);
+  //printf("Diff: %s %s\n", fn1, fn2);
   struct fdata a = read_fdata(fn1);
   struct fdata b = read_fdata(fn2);
   struct lcs lcs = getlcs(a, b);
-  if (lcs.len == a.nlines && lcs.len == b.nlines) {
-    //printf("no difference");
-    return;
-  }
-  print_diff(fn1, fn2, a, b, lcs, nctx);
+  if (lcs.len != a.nlines || lcs.len != b.nlines)
+    print_diff(fn1, fn2, a, b, lcs, nctx);
   free(lcs.a);
   free(lcs.b);
   free_fdata(a);
@@ -422,9 +426,9 @@ void diff(char *fn1, char *fn2, int nctx)
 int main(int argc, char **argv)
 {
   if (argc < 3) {
-    printf("diff demo -- print unified diff.");
-    printf("Usage: diff file1 file2 [num_context_lines]");
-    printf("  file1 or file2 can be - for stdin");
+    printf("diff demo -- print unified diff.\n"
+        "Usage: diff file1 file2 [num_context_lines]\n"
+        "  file1 or file2 can be - for stdin\n");
     return 42;
   }
   // nctx is number of lines of context (as in diff -U number)
