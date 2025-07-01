@@ -1,7 +1,6 @@
 /* diff.c -- show differences between two files
- * Copyright 2022 Ray Gardner (rdg, raygard)
+ * Copyright 2022-2025 Ray Gardner (rdg, raygard)
  * License: 0BSD
- * Preliminary version
  * unified diff using LCS method
  * demo LCS algos of Hunt/Szymanski and Kuo/Cross
  */
@@ -22,6 +21,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <stdarg.h>
 #include <assert.h>
 #include <time.h>
 #include <sys/stat.h>
@@ -34,15 +34,40 @@
 #define max(a, b) ((a) > (b) ? (a) : (b))
 #endif
 
-// Stand-ins for alloc funcs that die on error.
-#define xrealloc realloc
-#define xzalloc(n)  calloc(1, (n))
-#define xmalloc  malloc
+void errif(int cond, char *fmt,...)
+{
+    va_list argptr;
+    if (cond) {
+      va_start(argptr, fmt);
+      vfprintf(stderr, fmt, argptr);
+      va_end(argptr);
+      printf("\n");
+      exit(2);
+    }
+}
+
+void *xrealloc(void *p, size_t n)
+{
+  p = realloc(p, n);
+  errif(!p, "can't alloc %ld", (long)n);
+  return p;
+}
+
+void *xmalloc(size_t n)
+{
+  return xrealloc(0, n);
+}
+
+void *xzalloc(size_t n)
+{
+  void *p = xrealloc(0, n);
+  memset(p, 0, n);
+  return p;
+}
 
 char *xstrdup(char *s)
 {
-  char *p = malloc(strlen(s) + 1);
-  assert(p);
+  char *p = xmalloc(strlen(s) + 1);
   return strcpy(p, s);
 }
 
@@ -68,39 +93,51 @@ int cmpline(char *a, char *b)
   return strcmp(a, b);
 }
 
-// Like getline() but not quite.
-intmax_t readline(char **buf, size_t *bufsiz, FILE *fp)
+// readline() -- like getline() but not quite.
+// assumes *buf is null or points to memory allocated by
+// malloc/calloc/realloc, and *bufsize is length of buffer.
+// readline() (re-)allocates buffer as needed;
+// reads newline-terminated lines but handles last line unterminated;
+// handles embedded nul (zero) bytes;
+// returns length of line including newline if any;
+// returns -1 at EOF; returns -2 on read error.
+intmax_t readline(char **buf, size_t *bufsize, FILE *fp)
 {
-#define initsz 512
-  if (! *buf) {
-    *buf = xrealloc(*buf, initsz);
-    assert(*buf);
-    *bufsiz = initsz;
+  char *b, *e, *p;
+#define init_size 128   // must be > 1
+  if (! *buf || *bufsize < 2) *buf = xrealloc(*buf, *bufsize = init_size);
+  b = *buf;
+  for (;;) {
+    size_t n = *buf + *bufsize - b;
+    memset(b, '\xff', n);
+    p = fgets(b, n, fp);
+    if (!p && ferror(fp)) return -2;
+    e = memchr(b, '\n', n);
+    if (e) return e - *buf + 1;
+    // No newline
+    if (feof(fp)) {
+      if (!p) {   // no data on last read
+        *b = 0;  // ensure 0 byte
+        if (b == *buf) return -1;
+      }
+      p = *buf + *bufsize - 1; // last byte in buffer
+      while (*p && p > *buf) p--;
+      assert(!*p);    // must have a 0 byte
+      return p - *buf;
+    }
+    // expand buffer and read more
+    n = *bufsize * 5 / 3;
+    *buf = xrealloc(*buf, n);
+    b = *buf + *bufsize - 1;
+    *bufsize = n;
   }
-  char *p = fgets(*buf, *bufsiz, fp);
-  if (!p)
-    return -1;
-  assert(p == *buf);
-  while (p[strlen(p)-1] != '\n') {
-    size_t n = *bufsiz * 5 / 3;
-    char *nbuf = xrealloc(*buf, n);
-    assert(nbuf);
-    p = nbuf + (p - *buf);
-    *buf = nbuf;
-    *bufsiz = n;
-    p += strlen(p);
-    //fgets(p, *bufsiz - strlen(*buf), fp);
-    char *np = fgets(p, *buf + *bufsiz - p, fp);   // same as above but faster?
-    assert(np);
-  }
-  return strlen(*buf);
 }
 
 struct fdata read_fdata(char *fn)
 {
   struct fdata fd;
   FILE *fp = strcmp(fn, "-") ? fopen(fn, "r") : stdin;
-  assert(fp);
+  errif(!fp, "can't open %s", fn);
   intmax_t linesmax = 100;
   fd.lines = xzalloc(linesmax * sizeof(*fd.lines));
   fd.nlines = 0;
@@ -108,15 +145,17 @@ struct fdata read_fdata(char *fn)
   intmax_t k;
   size_t linesz = 0;
   k = readline(&line, &linesz, fp);
-  while (k >= 0) {
+  while (k > 0) {
     if (fd.nlines == linesmax) {
       linesmax = linesmax * 5 / 3;
       fd.lines = xrealloc(fd.lines, linesmax * sizeof(*fd.lines));
     }
     fd.lines[fd.nlines++] = xstrdup(line);
     k = readline(&line, &linesz, fp);
-    assert(k < 0 || (size_t)k == strlen(line));
+    errif(k > 0 && (size_t)k != strlen(line), "null char in data?");
   }
+  errif(k == -2, "read error on %s", fn);
+  assert(k == -1);
   free(line);
   if (strcmp(fn, "-"))
     fclose(fp);
@@ -346,7 +385,7 @@ void printhdr(char *prefix, char *fn)
   time_t mtim;
   if (strcmp(fn, "-")) {
     int r = stat(fn, &statbuf);
-    assert(!r);
+    errif(r, "can't stat %s", fn);
     mtim = statbuf.st_mtime;
   } else {
     mtim = time(NULL);
