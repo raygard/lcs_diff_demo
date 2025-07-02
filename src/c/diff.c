@@ -110,16 +110,14 @@ intmax_t readline(char **buf, size_t *bufsize, FILE *fp)
   for (;;) {
     size_t n = *buf + *bufsize - b;
     memset(b, '\xff', n);
+    *b = 0;   // ensure 0 byte in buffer if no data is read
     p = fgets(b, n, fp);
     if (!p && ferror(fp)) return -2;
     e = memchr(b, '\n', n);
     if (e) return e - *buf + 1;
     // No newline
     if (feof(fp)) {
-      if (!p) {   // no data on last read
-        *b = 0;  // ensure 0 byte
-        if (b == *buf) return -1;
-      }
+      if (!p && b == *buf) return -1;
       p = *buf + *bufsize - 1; // last byte in buffer
       while (*p && p > *buf) p--;
       assert(!*p);    // must have a 0 byte
